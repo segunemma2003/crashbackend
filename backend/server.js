@@ -8,19 +8,27 @@ const cookieParser = require("cookie-parser");
 const bcrypt = require("bcryptjs");
 const session = require("express-session");
 const bodyParser = require("body-parser");
+
 const app = express();
 const User = require("./models/user");
 const Game_loop = require("./models/game_loop")
 require('dotenv').config()
+// const { client, testClient, Client, Config } = require('coingate-v2');
 
 const GAME_LOOP_ID = '62b7e66b1da7901bfc65df0d'
 
 const { Server } = require('socket.io')
 const http = require('http')
 const Stopwatch = require('statman-stopwatch');
+
 const { update } = require("./models/user");
 const sw = new Stopwatch(true);
+// const coingate = client(process.env.COIN_GATE_LIVE_TOKEN);
+// const testCongate = testClient(process.env.COIN_GATE_TEST_TOKEN);
 
+const { Client, resources } = require('coinbase-commerce-node');
+Client.init(String(process.env.COINBASE_API));
+const { Charge } = resources;
 // Start Socket.io Server
 const server = http.createServer(app)
 const io = new Server(server, {
@@ -46,6 +54,15 @@ mongoose.connect(
     useUnifiedTopology: true,
   },
 );
+const db = mongoose.connection;
+
+db.on('error', (error) => {
+  console.error('MongoDB connection error:', error);
+});
+
+db.once('open', () => {
+  console.log('Connected to MongoDB');
+});
 
 // Backend Setup
 app.use(bodyParser.json());
@@ -85,6 +102,35 @@ app.post("/login", (req, res, next) => {
   })(req, res, next);
 });
 
+
+app.post("/coinbase", async(req, res, next) => {
+  const { id, amount } = req.body;
+  try {
+
+    const chargeData = {
+      name: "platform fee",
+      description: "Topup",
+      pricing_type: "fixed_price",
+      local_price: {
+        amount: amount,
+        currency: "USDT",
+      },
+      metadata: {
+        id: id,
+        userID: id
+      },
+    };
+
+    const charge = await Charge.create(chargeData);
+
+    res.send(charge);
+  } catch (e) {
+    res.status(500).send({ error:e });
+  }
+
+});
+
+
 app.post("/register", (req, res) => {
   if (req.body.username.length < 3 || req.body.password < 3) {
     return
@@ -98,6 +144,8 @@ app.post("/register", (req, res) => {
 
       const newUser = new User({
         username: req.body.username,
+        balance: req.body.balance,
+        initial_bal: req.body.balance,
         password: hashedPassword,
       });
       await newUser.save();
@@ -137,11 +185,13 @@ app.get('/generate_crash_value', async (req, res) => {
 
 app.get('/retrieve', async (req, res) => {
   const game_loop = await Game_loop.findById(GAME_LOOP_ID)
+  if(game_loop){
   crashMultipler = game_loop.multiplier_crash
   res.json(crashMultipler)
   const delta = sw.read(2);
   let seconds = delta / 1000.0;
   seconds = seconds.toFixed(2);
+  }
   return
 })
 
@@ -209,8 +259,11 @@ app.get('/calculate_winnings', checkAuthenticated, async (req, res) => {
 
 app.get('/get_game_status', async (req, res) => {
   let theLoop = await Game_loop.findById(GAME_LOOP_ID)
-  io.emit('crash_history', theLoop.previous_crashes)
-  io.emit('get_round_id_list', theLoop.round_id_list)
+  if(theLoop){
+    io.emit('crash_history', theLoop.previous_crashes)
+    io.emit('get_round_id_list', theLoop.round_id_list)
+  }
+ 
   if (betting_phase == true) {
     res.json({ phase: 'betting_phase', info: phase_start_time })
     return
@@ -283,19 +336,25 @@ app.post('/send_message_to_chatbox', checkAuthenticated, async (req, res) => {
     the_date: new Date().toLocaleDateString(),
   }
   theLoop = await Game_loop.findById(GAME_LOOP_ID)
-  const somevar = await Game_loop.findOneAndUpdate(
-    { _id: GAME_LOOP_ID },
-    { $push: { chat_messages_list: message_json } },
-  );
-
-  messages_list.push(message_json)
-  io.emit("receive_message_for_chat_box", JSON.stringify(theLoop.chat_messages_list))
-  res.send("Message sent")
+  if(theLoop){
+    const somevar = await Game_loop.findOneAndUpdate(
+      { _id: GAME_LOOP_ID },
+      { $push: { chat_messages_list: message_json } },
+    );
+  
+    messages_list.push(message_json)
+    io.emit("receive_message_for_chat_box", JSON.stringify(theLoop.chat_messages_list))
+    res.send("Message sent")
+  }
+  
 })
 
 app.get('/get_chat_history', async (req, res) => {
   theLoop = await Game_loop.findById(GAME_LOOP_ID)
-  res.json(theLoop.chat_messages_list)
+  if(theLoop){
+    res.json(theLoop.chat_messages_list)
+  }
+ 
   return
 })
 
@@ -306,7 +365,9 @@ app.get('/retrieve_active_bettors_list', async (req, res) => {
 
 app.get('/retrieve_bet_history', async (req, res) => {
   let theLoop = await Game_loop.findById(GAME_LOOP_ID)
+  if(theLoop){
   io.emit('crash_history', theLoop.previous_crashes)
+  }
   return
 })
 
@@ -331,6 +392,7 @@ app.listen(4000, () => {
 
 const cashout = async () => {
   theLoop = await Game_loop.findById(GAME_LOOP_ID)
+  if(theLoop){
   playerIdList = theLoop.active_player_id_list
   crash_number = game_crash_value
   for (const playerId of playerIdList) {
@@ -343,6 +405,7 @@ const cashout = async () => {
   }
   theLoop.active_player_id_list = []
   await theLoop.save()
+}
 }
 
 // Run Game Loop
@@ -384,6 +447,7 @@ const loopUpdate = async () => {
       sent_cashout = true
       right_now = Date.now()
       const update_loop = await Game_loop.findById(GAME_LOOP_ID)
+      if(update_loop){
       await update_loop.updateOne({ $push: { previous_crashes: game_crash_value } })
       await update_loop.updateOne({ $unset: { "previous_crashes.0": 1 } })
       await update_loop.updateOne({ $pull: { "previous_crashes": null } })
@@ -391,6 +455,7 @@ const loopUpdate = async () => {
       await update_loop.updateOne({ $push: { round_id_list: the_round_id_list[the_round_id_list.length - 1] + 1 } })
       await update_loop.updateOne({ $unset: { "round_id_list.0": 1 } })
       await update_loop.updateOne({ $pull: { "round_id_list": null } })
+      }
     }
 
     if (time_elapsed > 3) {
@@ -407,14 +472,17 @@ const loopUpdate = async () => {
         game_crash_value = 0.01 + (0.99 / random_int_0_to_1)
         game_crash_value = Math.round(game_crash_value * 100) / 100
       }
+      
       io.emit('update_user')
       let theLoop = await Game_loop.findById(GAME_LOOP_ID)
+      if (theLoop) {  
       io.emit('crash_history', theLoop.previous_crashes)
       io.emit('get_round_id_list', theLoop.round_id_list)
       io.emit('start_betting_phase')
       io.emit('testingvariable')
       live_bettors_table = []
       phase_start_time = Date.now()
+      }
     }
   }
 }

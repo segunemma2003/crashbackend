@@ -12,6 +12,10 @@ const user = new mongoose.Schema({
     type: Number,
     default: 1000
   },
+  initial_bal: {
+    type: Number,
+    default: 0
+  },
   bet_amount: {
     type: Number,
     default: 0
